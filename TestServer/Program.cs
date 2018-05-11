@@ -43,15 +43,22 @@ namespace TestServer
                 /// new Client(Listener.AcceptTcpClient());
                 /// 
 
-                ////  ВАРИАНТ 1 - создавать вручную новый поток для каждого клиента
-                // Принимаем нового клиента
-                TcpClient Client = Listener.AcceptTcpClient();
-                // Создаем поток
-                Thread thread = new Thread(new ParameterizedThreadStart(ClientThread));
-                // И запускаем этот поток, передавая ему принятого клиента
-                thread.Name = String.Format("Thread no.: {0}", thr++);
-                thread.Start(Client);
-                
+                //////  ВАРИАНТ 1 - создавать вручную новый поток для каждого клиента
+                //// Принимаем нового клиента
+                //TcpClient Client = Listener.AcceptTcpClient();
+                //// Создаем поток
+                //Thread thread = new Thread(new ParameterizedThreadStart(ClientThread));
+                //// И запускаем этот поток, передавая ему принятого клиента
+                //thread.Name = String.Format("Thread no.: {0}", thr++);
+                //thread.Start(Client);
+
+                /// Вариант 2 - воспользоваться пулом потоков.
+
+                // Принимаем новых клиентов. После того, как клиент был принят, он передается в новый поток (ClientThread)
+                // с использованием пула потоков.
+                ThreadPool.QueueUserWorkItem(new WaitCallback(ClientThread), Listener.AcceptTcpClient());
+
+
 
 
             }
@@ -75,7 +82,7 @@ namespace TestServer
         static void ClientThread(Object StateInfo)
         {
             new Client((TcpClient)StateInfo);
-            Console.WriteLine("Thread: ", Thread.CurrentThread.Name);
+            
         }
 
 
@@ -88,6 +95,16 @@ namespace TestServer
 
         static void Main(string[] args)
         {
+
+
+            // Определим нужное максимальное количество потоков
+            // Пусть будет по 4 на каждый процессор
+            int MaxThreadsCount = Environment.ProcessorCount * 4;
+            // Установим максимальное количество рабочих потоков
+            ThreadPool.SetMaxThreads(MaxThreadsCount, MaxThreadsCount);
+            // Установим минимальное количество рабочих потоков
+            ThreadPool.SetMinThreads(2, 2);
+
             Logger logger = LogManager.GetCurrentClassLogger();
             logger.Trace("==================================================================\n\n");
             logger.Trace("Server starting....");
@@ -109,7 +126,8 @@ namespace TestServer
             
             logger.Trace("Request from client");
             errCode = "200 OK";
-            
+
+            Console.WriteLine("Thread: {0}", System.Threading.Thread.CurrentThread.ManagedThreadId);
             //StreamWriter sw = new StreamWriter(client.GetStream());
             //var response = "12 01 40";
             //sw.WriteLine(response);
