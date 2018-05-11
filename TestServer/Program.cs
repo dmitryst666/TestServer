@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
+using System.Threading;
 using NLog;
 
 //
@@ -33,12 +34,25 @@ namespace TestServer
             logger.Trace("TCP listener at {0}:{1}", IPAddress.Any, Port);
             Listener.Start(); // Запускаем его
 
+            int thr = 0;
             // В бесконечном цикле
             while (true)
             {
 
-                // Принимаем новых клиентов и передаем их на обработку новому экземпляру класса Client
-                new Client(Listener.AcceptTcpClient());
+                // Принимаем новых клиентов и передаем их на обработку новому экземпляру класса Client -  всё в одном потоке
+                /// new Client(Listener.AcceptTcpClient());
+                /// 
+
+                ////  ВАРИАНТ 1 - создавать вручную новый поток для каждого клиента
+                // Принимаем нового клиента
+                TcpClient Client = Listener.AcceptTcpClient();
+                // Создаем поток
+                Thread thread = new Thread(new ParameterizedThreadStart(ClientThread));
+                // И запускаем этот поток, передавая ему принятого клиента
+                thread.Name = String.Format("Thread no.: {0}", thr++);
+                thread.Start(Client);
+                
+
 
             }
         }
@@ -56,6 +70,14 @@ namespace TestServer
                 Listener.Stop();
             }
         }
+
+
+        static void ClientThread(Object StateInfo)
+        {
+            new Client((TcpClient)StateInfo);
+            Console.WriteLine("Thread: ", Thread.CurrentThread.Name);
+        }
+
 
     }
 
