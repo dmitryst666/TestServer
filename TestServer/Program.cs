@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Threading;
 using NLog;
+using System.Text.RegularExpressions;
 
 //
 // https://habr.com/post/120157/
@@ -120,38 +121,200 @@ namespace TestServer
     {
         private string errCode;
         Logger logger = LogManager.GetCurrentClassLogger();
+        
         // Конструктор класса. Ему нужно передавать принятого клиента от TcpListener
         public Client(TcpClient Client)
         {
             
-            logger.Trace("Request from client");
-            errCode = "200 OK";
+            logger.Trace("Thread ID: {0}   ================", System.Threading.Thread.CurrentThread.ManagedThreadId);
+            // Объявим строку, в которой будет хранится запрос клиента
+            string Request = "";
+            // Буфер для хранения принятых от клиента данных
+            byte[] Buffer = new byte[1024];
+            // Переменная для хранения количества байт, принятых от клиента
+            int Count;
+            // Читаем из потока клиента до тех пор, пока от него поступают данные
+            while ((Count = Client.GetStream().Read(Buffer, 0, Buffer.Length)) > 0)
+            {
+                // Преобразуем эти данные в строку и добавим ее к переменной Request
+                Request += Encoding.ASCII.GetString(Buffer, 0, Count);
+                // Запрос должен обрываться последовательностью \r\n\r\n
+                // Либо обрываем прием данных сами, если длина строки Request превышает 4 килобайта
+                // Нам не нужно получать данные из POST-запроса (и т. п.), а обычный запрос
+                // по идее не должен быть больше 4 килобайт
+                if (Request.IndexOf("\r\n\r\n") >= 0 || Request.Length > 4096)
+                {
+                    break;
+                }
+            }
+            logger.Trace("Request: {0}", Regex.Replace(Request, "\r\n\r\n",""));
 
-            Console.WriteLine("Thread: {0}", System.Threading.Thread.CurrentThread.ManagedThreadId);
-            //StreamWriter sw = new StreamWriter(client.GetStream());
-            //var response = "12 01 40";
-            //sw.WriteLine(response);
-            StreamReader sr = new StreamReader(Client.GetStream());
-            string request = sr.ReadLine();
-           logger.Trace("Request: {0}", request.ToString());
 
-            /// Перенаправить запрос на обработку
-            /// 
-            string Html = controller(request);
+            // Парсим строку запроса с использованием регулярных выражений
+            // При этом отсекаем все переменные GET-запроса
+            Match ReqMatch = Regex.Match(Request, @"^\w+\s+([^\s\?]+)[^\s]*\s+HTTP/.*|");
 
-            //// Код простой HTML-странички
-            //string Html = "<html><body><h1>It works!</h1></body></html>";
+            // Если запрос не удался
+            if (ReqMatch == Match.Empty)
+            {
+                // Передаем клиенту ошибку 400 - неверный запрос
+                SendError(Client, 400);
+                logger.Error("400 - Bad Request");
+                return;
+            }
+
+            // Получаем строку запроса
+            string RequestUri = ReqMatch.Groups[1].Value;
+
+            // Приводим ее к изначальному виду, преобразуя экранированные символы
+            // Например, "%20" -> " "
+            RequestUri = Uri.UnescapeDataString(RequestUri);
+
+            // Если в строке содержится двоеточие, передадим ошибку 400
+            // Это нужно для защиты от URL типа http://example.com/../../file.txt
+            if (RequestUri.IndexOf("..") >= 0)
+            {
+                SendError(Client, 400);
+                logger.Error("400 - Bad Request -- Double '..' found!");
+                return;
+            }
+
+            // Если строка запроса оканчивается на "/", то добавим к ней index.html
+            if (RequestUri.EndsWith("/"))
+            {
+                RequestUri += "index.html";
+            }
+
+
+
+            string FilePath = "www/" + RequestUri;
+
+            // Если в папке www не существует данного файла, посылаем ошибку 404
+            if (!File.Exists(FilePath))
+            {
+                SendError(Client, 404);
+                logger.Error("404 - Not Found");
+                return;
+            }
+
+            // Получаем расширение файла из строки запроса
+            string Extension = RequestUri.Substring(RequestUri.LastIndexOf('.'));
+
+            // Тип содержимого
+            string ContentType = "";
+
+            // Пытаемся определить тип содержимого по расширению файла
+            switch (Extension)
+            {
+                case ".htm":
+                case ".html":
+                    ContentType = "text/html";
+                    break;
+                case ".css":
+                    ContentType = "text/stylesheet";
+                    break;
+                case ".js":
+                    ContentType = "text/javascript";
+                    break;
+                case ".jpg":
+                    ContentType = "image/jpeg";
+                    break;
+                case ".jpeg":
+                case ".png":
+                case ".gif":
+                    ContentType = "image/" + Extension.Substring(1);
+                    break;
+                default:
+                    if (Extension.Length > 1)
+                    {
+                        ContentType = "application/" + Extension.Substring(1);
+                    }
+                    else
+                    {
+                        ContentType = "application/unknown";
+                    }
+                    break;
+            }
+
+
+            // Открываем файл, страхуясь на случай ошибки
+            FileStream FS;
+            try
+            {
+                FS = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                logger.Trace("Opening File: {0}", FilePath);
+                Console.WriteLine("Opening File: {0}", FilePath);
+            }
+            catch (Exception ex)
+            {
+                // Если случилась ошибка, посылаем клиенту ошибку 500
+                SendError(Client, 500);
+                logger.Error("500 - Internal Server Error -- {0}", ex.Message);
+                return;
+            }
+
+            // Посылаем заголовки
+            string Headers = "HTTP/1.1 200 OK\nContent-Type: " + ContentType + "\nContent-Length: " + FS.Length + "\n\n";
+            logger.Trace("Headers: {0}", Headers);
+            byte[] HeadersBuffer = Encoding.ASCII.GetBytes(Headers);
+            Client.GetStream().Write(HeadersBuffer, 0, HeadersBuffer.Length);
+
+            // Пока не достигнут конец файла
+            while (FS.Position < FS.Length)
+            {
+                // Читаем данные из файла
+                Count = FS.Read(Buffer, 0, Buffer.Length);
+                // И передаем их клиенту
+                Client.GetStream().Write(Buffer, 0, Count);
+            }
+
+            // Закроем файл и соединение
+            logger.Trace("Client thread closed.");
+            FS.Close();
+            Client.Close();
             
-            //// Необходимые заголовки: ответ сервера, тип и длина содержимого. После двух пустых строк - само содержимое
-            //string Str = "HTTP/1.1 200 OK\nContent-type: text/html\nContent-Length:" + Html.Length.ToString() + "\n\n" + Html;
-        string Str = "HTTP/1.1 " + errCode + " \nContent-type: text/html\nContent-Length:" + Html.Length.ToString() + "\n\n" + Html;
-            //// Приведем строку к виду массива байт
+
+            /////   WORKS
+            //    logger.Trace("Request from client");
+            //    errCode = "200 OK";
+            //    Console.WriteLine("Thread: {0}", System.Threading.Thread.CurrentThread.ManagedThreadId);
+            //    StreamReader sr = new StreamReader(Client.GetStream());
+            //    string request = sr.ReadLine();
+            //   logger.Trace("Request: {0}", request.ToString());
+
+            //    /// Перенаправить запрос на обработку
+            //    string Html = controller(request);
+            //string Str = "HTTP/1.1 " + errCode + " \nContent-type: text/html\nContent-Length:" + Html.Length.ToString() + "\n\n" + Html;
+            //    //// Приведем строку к виду массива байт
+            //    byte[] Buffer = Encoding.ASCII.GetBytes(Str);
+            //    //// Отправим его клиенту
+            //    Client.GetStream().Write(Buffer, 0, Buffer.Length);
+            //    //// Закроем соединение
+            //    Client.Close();
+            ///// WORKS
+        }
+
+
+
+        // Отправка страницы с ошибкой
+        private void SendError(TcpClient Client, int Code)
+        {
+            // Получаем строку вида "200 OK"
+            // HttpStatusCode хранит в себе все статус-коды HTTP/1.1
+            string CodeStr = Code.ToString() + " " + ((HttpStatusCode)Code).ToString();
+            // Код простой HTML-странички
+            string Html = "<html><body><h1>" + CodeStr + "</h1></body></html>";
+            // Необходимые заголовки: ответ сервера, тип и длина содержимого. После двух пустых строк - само содержимое
+            string Str = "HTTP/1.1 " + CodeStr + "\nContent-type: text/html\nContent-Length:" + Html.Length.ToString() + "\n\n" + Html;
+            // Приведем строку к виду массива байт
             byte[] Buffer = Encoding.ASCII.GetBytes(Str);
-            //// Отправим его клиенту
+            // Отправим его клиенту
             Client.GetStream().Write(Buffer, 0, Buffer.Length);
-            //// Закроем соединение
+            // Закроем соединение
             Client.Close();
         }
+
+
 
         public string controller(string req)
         {
