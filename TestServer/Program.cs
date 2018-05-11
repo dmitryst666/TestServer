@@ -23,7 +23,7 @@ namespace TestServer
     class Server
     {
 
-        Logger logger = LogManager.GetCurrentClassLogger();
+        public Logger logger = LogManager.GetCurrentClassLogger();
         TcpListener Listener; // Объект, принимающий TCP-клиентов
 
         // Запуск сервера
@@ -35,7 +35,6 @@ namespace TestServer
             logger.Trace("TCP listener at {0}:{1}", IPAddress.Any, Port);
             Listener.Start(); // Запускаем его
 
-            int thr = 0;
             // В бесконечном цикле
             while (true)
             {
@@ -66,24 +65,31 @@ namespace TestServer
         }
 
         // Остановка сервера
-        ~Server()
-        {
-            // Если "слушатель" был создан
-            if (Listener != null)
-            {
-                // Остановим его
+        //~Server()
+        //{
+        //    // Если "слушатель" был создан
+        //    if (Listener != null)
+        //    {
+        //        // Остановим его
                 
-                logger.Trace("TCP listener is stopped.");
+        //        logger.Trace("TCP listener is stopped.");
                 
-                Listener.Stop();
-            }
-        }
-
+        //        Listener.Stop();
+        //    }
+        //}
+        
 
         static void ClientThread(Object StateInfo)
         {
-            new Client((TcpClient)StateInfo);
             
+
+            try { 
+            new Client((TcpClient)StateInfo);
+            } catch(Exception ex)
+            {
+                Logger logger = LogManager.GetCurrentClassLogger();
+                logger.Fatal("Server failed to execute client request, or client side is down.");
+            }
         }
 
 
